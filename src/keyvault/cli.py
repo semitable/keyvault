@@ -13,7 +13,7 @@ from typing import Annotated
 import typer
 
 from . import gpg as gpg_keys
-from . import secrets, ssh
+from . import remote, secrets, ssh
 from .errors import KeyvaultError
 from .paths import flatten, merge
 from .vault import Vault, lock_session, open_session
@@ -179,6 +179,80 @@ def ssh_install(name: str, force: bool = False, master: bool = False) -> None:
     typer.echo(str(ssh.write(name, private, force=force)))
 
 
+@ssh_app.command("deploy")
+def ssh_deploy(target: str, apply: bool = False) -> None:
+    """Choose which of your keys a host accepts.
+
+        keyvault ssh deploy user@backup.example.com
+        keyvault ssh deploy root@host --apply
+
+    Reads the host's real authorized_keys rather than any local manifest, so
+    there is nothing to drift. Keys it does not recognise are listed and kept
+    unless you say otherwise -- one may belong to a colleague or a CI job.
+
+    Without --apply nothing is written. With it: the previous file is kept as
+    authorized_keys.prev, and a brand-new connection must authenticate before
+    the change is trusted. If it does not, .prev is restored over the
+    connection this command already holds open, which a lockout cannot block.
+    """
+    _, fields = _open()
+    if not (names := ssh.names(fields)):
+        raise KeyvaultError("the vault holds no ssh keys")
+
+    materials = {
+        name: material
+        for name in names
+        if (material := ssh.key_material(ssh.public_key(fields[f"ssh.{name}"])))
+    }
+
+    with remote.connect(target) as session:
+        present = ssh.classify(session.read_authorized_keys(), materials)
+        authorised = {name for name, _ in present if name}
+        unknown = [line for name, line in present if name is None]
+
+        keep: list[str] = []
+        for name in names:
+            prompt = f"  {name:<14} ...{materials[name][-12:]}"
+            if typer.confirm(prompt, default=name in authorised):
+                keep.append(ssh.authorized_line(name, fields[f"ssh.{name}"]))
+        for line in unknown:
+            label = ssh.key_material(line) or line
+            if typer.confirm(
+                f"  {'unknown':<14} ...{label[-12:]}  keep?", default=True
+            ):
+                keep.append(line)
+
+        if not keep:
+            raise KeyvaultError("that would authorise no keys at all; refusing")
+
+        contents = "".join(f"{line}\n" for line in keep)
+        if not apply:
+            typer.echo("\n--- would write ---")
+            typer.echo(contents, nl=False)
+            typer.echo("--- pass --apply to write it ---")
+            return
+
+        if problems := session.strict_mode_problems():
+            for problem in problems:
+                typer.echo(f"  {problem}")
+            raise KeyvaultError(
+                "sshd would ignore authorized_keys; fix the modes first"
+            )
+
+        session.write_authorized_keys(contents)
+        if remote.can_authenticate(target):
+            typer.echo(f"{len(keep)} keys authorised on {target}, verified")
+            return
+        if session.restore_previous():
+            raise KeyvaultError(
+                "the new file did not authenticate; restored authorized_keys.prev"
+            )
+        raise KeyvaultError(
+            "the new file did not authenticate AND .prev could not be restored -- "
+            f"fix {target}:{remote.AUTHORIZED_KEYS} before closing this shell"
+        )
+
+
 @ssh_app.command("list")
 def ssh_list() -> None:
     """Show the keys in the vault."""
@@ -209,7 +283,7 @@ def gpg_show(name: Annotated[str, typer.Argument()] = "") -> None:
 def gpg_store(name: str, fingerprint: str, force: bool = False) -> None:
     """Store a key from the local keyring in the vault.
 
-        keyvault gpg store personal E2464A53...
+        keyvault gpg store personal ABCD1234...
 
     Sourced from the keyring rather than a file, so the private key never has
     to be exported to disk first. The revocation certificate goes in too, if

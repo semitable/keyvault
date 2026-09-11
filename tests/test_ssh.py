@@ -146,3 +146,55 @@ def test_read_key_rejects_a_truncated_key(tmp_path: Path) -> None:
     truncated.write_text(good[: len(good) // 2] + "\n")
     with pytest.raises(KeyvaultError):
         ssh.read_key(truncated)
+
+
+ED = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample"
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (f"{ED} someone@host", ED),
+        (ED, ED),
+        # An options prefix must not be mistaken for the key type.
+        (f'restrict,from="10.0.0.0/8" {ED} ci', ED),
+        (f'command="/usr/bin/true",no-pty {ED}', ED),
+        ("# just a comment", None),
+        ("", None),
+        ("ssh-ed25519", None),
+        ("garbage line here", None),
+    ],
+)
+def test_key_material_ignores_options_and_comments(
+    line: str, expected: str | None
+) -> None:
+    assert ssh.key_material(line) == expected
+
+
+def test_classify_names_known_keys_and_keeps_unknown_ones() -> None:
+    other = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOther"
+    text = "\n".join(
+        [
+            "# a comment",
+            "",
+            f"{ED} keyvault:oxygen",
+            f"{other} deploy@ci",
+        ]
+    )
+    assert ssh.classify(text, {"oxygen": ED}) == [
+        ("oxygen", f"{ED} keyvault:oxygen"),
+        (None, f"{other} deploy@ci"),
+    ]
+
+
+def test_classify_matches_material_not_comment() -> None:
+    # Same key, different comment on the host: still recognised as ours.
+    assert ssh.classify(f"{ED} whatever-else", {"oxygen": ED}) == [
+        ("oxygen", f"{ED} whatever-else")
+    ]
+
+
+def test_authorized_line_is_labelled_with_the_vault_name(private: str) -> None:
+    line = ssh.authorized_line("laptop", private)
+    assert line.endswith(" keyvault:laptop")
+    assert ssh.key_material(line) == ssh.key_material(ssh.public_key(private))

@@ -90,6 +90,52 @@ def find_duplicate(fields: dict[str, str], private: str, *, ignore: str) -> str 
     return None
 
 
+# An authorized_keys line may carry an options prefix before the key type,
+# e.g. `restrict,from="10.0.0.0/8" ssh-ed25519 AAAA... comment`.
+KEY_TYPE_PREFIXES = ("ssh-", "ecdsa-", "sk-")
+
+
+def key_material(line: str) -> str | None:
+    """The `<type> <base64>` of an authorized_keys line, or None if there is none.
+
+    Ignores any options prefix and the trailing comment, both of which differ
+    between copies of the same key and must not affect identity.
+    """
+    fields = line.split()
+    for index, field in enumerate(fields):
+        if field.startswith(KEY_TYPE_PREFIXES) and index + 1 < len(fields):
+            return f"{field} {fields[index + 1]}"
+    return None
+
+
+def authorized_line(name: str, private: str) -> str:
+    """Render a vault key as an authorized_keys line.
+
+    Comments the line `keyvault:<name>` so a later deploy -- or a human reading
+    the file on the host -- can tell which vault entry put it there. That is the
+    problem an unlabelled key on a router creates.
+    """
+    return f"{key_material(public_key(private))} keyvault:{name}"
+
+
+def classify(text: str, materials: dict[str, str]) -> list[tuple[str | None, str]]:
+    """Pair each authorized_keys line with the vault key name it matches.
+
+    `materials` maps vault key name to its `key_material`. Lines that match
+    nothing come back with None rather than being dropped: an unrecognised key
+    may be a colleague or a CI system, and silently removing it would be worse
+    than leaving it.
+    """
+    by_material = {material: name for name, material in materials.items()}
+    entries = []
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        material = key_material(line)
+        entries.append((by_material.get(material) if material else None, line))
+    return entries
+
+
 def generate(name: str, path: Path) -> str:
     """Generate an ed25519 key at `path`, returning the private key."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
