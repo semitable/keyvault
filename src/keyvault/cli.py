@@ -219,15 +219,26 @@ def gpg_check() -> None:
         typer.echo(f"{path:<24} {len(fields[path])} chars")
 
 
-@secrets_app.command("sync")
-def secrets_sync() -> None:
-    """Render the env section into ~/.zshenv.secrets."""
+@secrets_app.command("show")
+def secrets_show(name: Annotated[str, typer.Argument()] = "") -> None:
+    """Print export lines for the stored secrets.
+
+    Use them however you like:
+
+        eval "$(keyvault secrets show)"
+        keyvault secrets show > ~/.zshenv.secrets
+
+    Redirecting onto an existing file keeps that file's permissions; creating
+    one fresh does not, so `umask 077` first or chmod it afterwards.
+    """
     _, fields = _open()
     values = secrets.values(fields)
-    path = secrets.env_file()
-    secrets.write(secrets.render(values), path)
-    typer.echo(f"wrote {len(values)} secrets to {path}")
-    typer.echo("run 'exec zsh' or open a new shell to pick them up")
+    if name:
+        secrets.check_name(name)
+        if name not in values:
+            raise KeyvaultError(f"the vault holds no secret named {name!r}")
+        values = {name: values[name]}
+    sys.stdout.write(secrets.render(values))
 
 
 @secrets_app.command("add")
