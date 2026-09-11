@@ -56,3 +56,16 @@ def test_expected_failures_are_a_message_not_a_traceback(
     assert result.exit_code != 0
     assert "bw login" in str(result.exception)
     assert not isinstance(result.exception, AttributeError | KeyError | TypeError)
+
+
+def test_changes_reports_paths_and_never_values() -> None:
+    from keyvault.cli import _changes
+
+    removed, added, changed = _changes(
+        {"ssh.a": "keep", "ssh.b": "old", "env.X": "gone"},
+        {"ssh.a": "keep", "ssh.b": "new", "env.Y": "fresh"},
+    )
+    assert removed == ["env.X"]
+    assert added == ["env.Y"]
+    assert changed == ["ssh.b"]
+    assert not {"old", "new", "gone", "fresh"} & set(removed + added + changed)

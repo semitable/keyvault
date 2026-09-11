@@ -1,6 +1,5 @@
 """Command line entry point."""
 
-import datetime
 import json
 import logging
 import os
@@ -97,9 +96,17 @@ def edit() -> None:
         doc = json.loads(after)
     except json.JSONDecodeError as exc:
         raise KeyvaultError(f"not valid JSON, nothing written: {exc}") from exc
-    backup = _backup(before)
-    vault.write_fields(flatten(doc))
-    typer.echo(f"saved; previous contents kept at {backup}")
+    after_fields = flatten(doc)
+    removed, added, changed = _changes(fields, after_fields)
+    for label, paths in (("remove", removed), ("change", changed), ("add", added)):
+        for path in paths:
+            typer.echo(f"  {label:<7} {path}")
+    # Only losing data needs a confirmation. Bitwarden keeps no history for
+    # custom fields, so an overwritten value has nowhere to come back from.
+    if removed or changed:
+        typer.confirm("apply", abort=True)
+    vault.write_fields(after_fields)
+    typer.echo("saved")
 
 
 @ssh_app.command("new")
@@ -184,20 +191,17 @@ def _through_editor(text: str) -> str:
         return path.read_text()
 
 
-def _backup(text: str) -> Path:
-    """Keep a local copy before a write.
-
-    Bitwarden stores no history for custom fields, so an overwritten field is
-    gone; this is the only way back from a bad edit.
-    """
-    root = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
-    directory = Path(root) / "keyvault"
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    path = directory / f"prev-{stamp}.json"
-    path.write_text(text)
-    path.chmod(0o600)
-    return path
+def _changes(
+    before: dict[str, str], after: dict[str, str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Field paths removed, added and changed. Never returns values."""
+    return (
+        sorted(before.keys() - after.keys()),
+        sorted(after.keys() - before.keys()),
+        sorted(
+            path for path in before.keys() & after.keys() if before[path] != after[path]
+        ),
+    )
 
 
 def _open() -> tuple[Vault, dict[str, str]]:
