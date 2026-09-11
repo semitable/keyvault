@@ -81,6 +81,21 @@ def flatten(doc: Document, prefix: str = "") -> dict[str, str]:
     return out
 
 
+def section(fields: dict[str, str], name: str) -> dict[str, str]:
+    """The direct children of a top-level section, keyed by their last segment.
+
+    Ignores deeper paths: `ssh.laptop.private` is not a child of `ssh` for
+    this purpose, and treating it as one would hand a caller a value it does
+    not expect.
+    """
+    children = {}
+    for path, value in fields.items():
+        match path.split("."):
+            case [head, key] if head == name:
+                children[key] = value
+    return children
+
+
 def split_path(path: str) -> list[str]:
     """Split a field name into validated segments."""
     if not path:

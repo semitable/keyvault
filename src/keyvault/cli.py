@@ -12,7 +12,8 @@ from typing import Annotated
 
 import typer
 
-from . import ssh
+from . import gpg as gpg_keys
+from . import secrets, ssh
 from .errors import KeyvaultError
 from .paths import flatten, merge
 from .vault import Vault, lock_session, open_session
@@ -24,6 +25,10 @@ app = typer.Typer(
 )
 ssh_app = typer.Typer(no_args_is_help=True, help="SSH keys.")
 app.add_typer(ssh_app, name="ssh")
+secrets_app = typer.Typer(no_args_is_help=True, help="Environment secrets.")
+app.add_typer(secrets_app, name="secrets")
+gpg_app = typer.Typer(no_args_is_help=True, help="The personal GPG key.")
+app.add_typer(gpg_app, name="gpg")
 
 
 # Without a callback, typer folds a lone command into the root and `keyvault
@@ -179,6 +184,77 @@ def ssh_list() -> None:
         return
     for name in stored:
         typer.echo(f"{name:<16} {ssh.fingerprint(fields[f'ssh.{name}'])}")
+
+
+@gpg_app.command("install")
+def gpg_install(force: bool = False) -> None:
+    """Import the GPG key from the vault into the local keyring.
+
+    The key carries no passphrase, so nothing prompts on use afterwards: any
+    process running as you can decrypt what it protects. Remove it again with
+    `gpg --delete-secret-keys <fingerprint>`.
+    """
+    _, fields = _open()
+    fingerprint = gpg_keys.fingerprint(fields)
+    if gpg_keys.in_keyring(fingerprint) and not force:
+        typer.echo(f"{fingerprint} is already in the keyring")
+        return
+    gpg_keys.install(gpg_keys.private_key(fields), fingerprint)
+    typer.echo(f"imported {fingerprint}, trusted ultimately")
+
+
+@gpg_app.command("check")
+def gpg_check() -> None:
+    """Report what the vault holds and whether the key is installed.
+
+    Prints lengths, never values.
+    """
+    _, fields = _open()
+    fingerprint = gpg_keys.fingerprint(fields)
+    typer.echo(f"fingerprint  {fingerprint}")
+    typer.echo(
+        f"keyring      {'present' if gpg_keys.in_keyring(fingerprint) else 'absent'}"
+    )
+    for path in sorted(p for p in fields if p.startswith("gpg.")):
+        typer.echo(f"{path:<24} {len(fields[path])} chars")
+
+
+@secrets_app.command("sync")
+def secrets_sync() -> None:
+    """Render the env section into ~/.zshenv.secrets."""
+    _, fields = _open()
+    values = secrets.values(fields)
+    path = secrets.env_file()
+    secrets.write(secrets.render(values), path)
+    typer.echo(f"wrote {len(values)} secrets to {path}")
+    typer.echo("run 'exec zsh' or open a new shell to pick them up")
+
+
+@secrets_app.command("add")
+def secrets_add(name: str, force: bool = False) -> None:
+    """Prompt for a secret and store it as env.<NAME>."""
+    secrets.check_name(name)
+    vault, fields = _open()
+    if f"env.{name}" in fields and not force:
+        raise KeyvaultError(f"env.{name} already exists; pass --force to replace it")
+    value = typer.prompt(f"value for {name}", hide_input=True)
+    if not value:
+        raise KeyvaultError("empty value")
+    # Enough to catch a truncated paste, not enough to expose the secret.
+    typer.echo(f"{len(value)} characters ending {value[-4:]!r}")
+    vault.write_fields(fields | {f"env.{name}": value})
+    typer.echo(f"stored env.{name}; run 'keyvault secrets sync' to export it")
+
+
+@secrets_app.command("list")
+def secrets_list() -> None:
+    """Show the stored secrets by name and length, never by value."""
+    _, fields = _open()
+    if not (values := secrets.values(fields)):
+        typer.echo("no secrets in the vault")
+        return
+    for name, value in sorted(values.items()):
+        typer.echo(f"{name:<28} {len(value)} chars")
 
 
 def _through_editor(text: str) -> str:

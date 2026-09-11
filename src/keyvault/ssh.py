@@ -17,7 +17,7 @@ import subprocess
 from pathlib import Path
 
 from .errors import KeyvaultError
-from .paths import SEGMENT_RE
+from .paths import SEGMENT_RE, section
 
 KEY_TYPE = "ed25519"
 
@@ -41,17 +41,8 @@ def key_path(name: str) -> Path:
 
 
 def names(fields: dict[str, str]) -> list[str]:
-    """The key names stored in the vault.
-
-    Only `ssh.<name>` counts. A deeper path is not a key, and treating one as
-    a key name would feed something that is not a private key to ssh-keygen.
-    """
-    found = []
-    for path in fields:
-        match path.split("."):
-            case ["ssh", name]:
-                found.append(name)
-    return sorted(found)
+    """The key names stored in the vault."""
+    return sorted(section(fields, "ssh"))
 
 
 def private_key(fields: dict[str, str], name: str) -> str:
