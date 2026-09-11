@@ -1,3 +1,4 @@
+import pathlib
 import socket
 from pathlib import Path
 
@@ -113,3 +114,13 @@ def test_add_to_agent_without_an_agent_says_so(
     monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
     with pytest.raises(KeyvaultError, match="SSH_AUTH_SOCK"):
         ssh.add_to_agent(private)
+
+
+def test_public_key_leaves_no_file_behind(private: str) -> None:
+    # It has to go through a file: ssh-keygen rejects a private key from a pipe
+    # on macOS, where /dev/stdin is 0660. Nothing may survive the call.
+    import tempfile
+
+    before = set(pathlib.Path(tempfile.gettempdir()).iterdir())
+    ssh.public_key(private)
+    assert set(pathlib.Path(tempfile.gettempdir()).iterdir()) == before
