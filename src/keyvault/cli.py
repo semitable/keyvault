@@ -247,23 +247,27 @@ def gpg_install(name: Annotated[str, typer.Argument()] = "") -> None:
     typer.echo(f"imported {key!r} as {fingerprint}, trusted ultimately")
 
 
-@gpg_app.command("check")
-def gpg_check() -> None:
-    """Report what the vault holds and whether each key is installed.
+@gpg_app.command("list")
+def gpg_list() -> None:
+    """Show the stored keys, with their identity and whether each is installed.
 
-    Reads fingerprints off the stored keys without importing anything, and
-    prints lengths rather than values.
+    Reads fingerprints and user IDs off the stored keys without importing
+    anything, and prints lengths rather than values.
     """
     _, fields = _open()
     if not (keys := gpg_keys.names(fields)):
         typer.echo("no gpg keys in the vault")
         return
     for key in keys:
-        fingerprint = gpg_keys.fingerprint(gpg_keys.private_key(fields, key))
+        private = gpg_keys.private_key(fields, key)
+        fingerprint = gpg_keys.fingerprint(private)
         state = "in keyring" if gpg_keys.in_keyring(fingerprint) else "not imported"
         typer.echo(f"{key:<12} {fingerprint} {state}")
+        typer.echo(f"{'':<12} {gpg_keys.uid(private)}")
         for path in sorted(p for p in fields if p.startswith(f"gpg.{key}.")):
-            typer.echo(f"  {path.split('.', 2)[2]:<20} {len(fields[path])} chars")
+            typer.echo(
+                f"{'':<12} {path.split('.', 2)[2]:<18} {len(fields[path])} chars"
+            )
 
 
 @secrets_app.command("show")

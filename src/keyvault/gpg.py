@@ -5,7 +5,7 @@ holds its revocation certificate, if there is one. Two levels because a GPG key
 has more than one thing worth keeping, unlike an SSH key.
 
 Fingerprints are not stored. They are read off the armored key without
-importing it, so `check` can report what the vault holds without touching the
+importing it, so `list` can report what the vault holds without touching the
 local keyring.
 
 `install` reads only `.private`. Importing a revocation certificate revokes the
@@ -61,6 +61,18 @@ def fingerprint(private: str) -> str:
         if line.startswith("fpr:"):
             return line.split(":")[9]
     raise KeyvaultError("gpg could not read a fingerprint from the stored key")
+
+
+def uid(private: str) -> str:
+    """The key's primary user ID, read off the armored key.
+
+    A key can carry several; the first is the one gpg treats as primary.
+    """
+    listing = _gpg("--show-keys", "--with-colons", stdin=private) or ""
+    for line in listing.splitlines():
+        if line.startswith("uid:"):
+            return line.split(":")[9]
+    return "(no user id)"
 
 
 def in_keyring(fingerprint: str) -> bool:
