@@ -19,6 +19,13 @@ def test_names_lists_only_ssh_entries() -> None:
     ]
 
 
+def test_names_ignores_deeper_paths() -> None:
+    # An older schema stored ssh.<name>.private/.public. Treating those as key
+    # names fed a public key to ssh-keygen -y and failed in libcrypto.
+    assert ssh.names({"ssh.oxygen.private": "a", "ssh.oxygen.public": "b"}) == []
+    assert ssh.names({"ssh.oxygen": "a", "ssh.oxygen.private": "b"}) == ["oxygen"]
+
+
 def test_private_key_names_the_missing_entry() -> None:
     with pytest.raises(KeyvaultError, match="no key named 'desk'"):
         ssh.private_key({"ssh.laptop": "a"}, "desk")

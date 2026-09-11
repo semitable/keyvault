@@ -1,9 +1,13 @@
 """Command line entry point."""
 
+import datetime
 import json
 import logging
+import os
 import shlex
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Annotated
 
@@ -11,7 +15,7 @@ import typer
 
 from . import ssh
 from .errors import KeyvaultError
-from .paths import merge
+from .paths import flatten, merge
 from .vault import Vault, lock_session, open_session
 
 app = typer.Typer(
@@ -73,6 +77,29 @@ def dump() -> None:
     _, fields = _open()
     json.dump(merge(fields), sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
+
+
+@app.command()
+def edit() -> None:
+    """Open the whole vault document in $EDITOR and save any changes.
+
+    The document goes to a private temporary file for the editor to open.
+    That is the one place keyvault writes secrets it was not asked to write;
+    the file is removed when the editor exits.
+    """
+    vault, fields = _open()
+    before = json.dumps(merge(fields), indent=2, sort_keys=True)
+    after = _through_editor(before)
+    if after.strip() == before.strip():
+        typer.echo("unchanged")
+        return
+    try:
+        doc = json.loads(after)
+    except json.JSONDecodeError as exc:
+        raise KeyvaultError(f"not valid JSON, nothing written: {exc}") from exc
+    backup = _backup(before)
+    vault.write_fields(flatten(doc))
+    typer.echo(f"saved; previous contents kept at {backup}")
 
 
 @ssh_app.command("new")
@@ -145,6 +172,32 @@ def ssh_list() -> None:
         return
     for name in stored:
         typer.echo(f"{name:<16} {ssh.fingerprint(fields[f'ssh.{name}'])}")
+
+
+def _through_editor(text: str) -> str:
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "keyvault.json"
+        path.write_text(text)
+        path.chmod(0o600)
+        subprocess.run([*shlex.split(editor), str(path)], check=True)
+        return path.read_text()
+
+
+def _backup(text: str) -> Path:
+    """Keep a local copy before a write.
+
+    Bitwarden stores no history for custom fields, so an overwritten field is
+    gone; this is the only way back from a bad edit.
+    """
+    root = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    directory = Path(root) / "keyvault"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = directory / f"prev-{stamp}.json"
+    path.write_text(text)
+    path.chmod(0o600)
+    return path
 
 
 def _open() -> tuple[Vault, dict[str, str]]:
