@@ -293,15 +293,30 @@ def secrets_show(name: Annotated[str, typer.Argument()] = "") -> None:
 
 
 @secrets_app.command("store")
-def secrets_store(name: str, force: bool = False) -> None:
-    """Prompt for a secret and store it in the vault as env.<NAME>."""
+def secrets_store(name: str, force: bool = False, stdin: bool = False) -> None:
+    """Store a secret in the vault as env.<NAME>.
+
+    Prompts for the value, or reads it from stdin with --stdin:
+
+        printf '%s' "$GEMINI_API_KEY" | keyvault secrets store GEMINI_API_KEY --stdin
+
+    A value is never taken from the command line, where it would land in shell
+    history and in `ps`. --stdin needs the vault already unlocked, since the
+    master-password prompt cannot share a pipe with the value.
+    """
     secrets.check_name(name)
+    # Read before touching the vault: if bw needs to prompt for the master
+    # password it reads the terminal, and a consumed pipe would confuse it.
+    value = (
+        sys.stdin.read().rstrip("\n")
+        if stdin
+        else typer.prompt(f"value for {name}", hide_input=True)
+    )
+    if not value:
+        raise KeyvaultError("empty value")
     vault, fields = _open()
     if f"env.{name}" in fields and not force:
         raise KeyvaultError(f"env.{name} already exists; pass --force to replace it")
-    value = typer.prompt(f"value for {name}", hide_input=True)
-    if not value:
-        raise KeyvaultError("empty value")
     # Enough to catch a truncated paste, not enough to expose the secret.
     typer.echo(f"{len(value)} characters ending {value[-4:]!r}")
     vault.write_fields(fields | {f"env.{name}": value})
