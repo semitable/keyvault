@@ -131,14 +131,14 @@ def ssh_new(name: Annotated[str, typer.Argument()] = "") -> None:
     typer.echo(f"{ssh.key_path(name)}\n{ssh.public_key(private)}")
 
 
-@ssh_app.command("import")
-def ssh_import(name: str, path: Path, force: bool = False) -> None:
+@ssh_app.command("store")
+def ssh_store(name: str, path: Path, force: bool = False) -> None:
     """Store a key that already exists on disk in the vault.
 
     For adopting a machine's existing key, where the filename does not follow
     the id_<name> convention:
 
-        keyvault ssh import oxygen ~/.ssh/id_ed25519
+        keyvault ssh store oxygen ~/.ssh/id_ed25519
     """
     vault, fields = _open()
     if f"ssh.{name}" in fields and not force:
@@ -201,11 +201,11 @@ def gpg_show(name: Annotated[str, typer.Argument()] = "") -> None:
     sys.stdout.write(gpg_keys.private_key(fields, gpg_keys.resolve(fields, name)))
 
 
-@gpg_app.command("import")
-def gpg_import(name: str, fingerprint: str, force: bool = False) -> None:
+@gpg_app.command("store")
+def gpg_store(name: str, fingerprint: str, force: bool = False) -> None:
     """Store a key from the local keyring in the vault.
 
-        keyvault gpg import personal E2464A53...
+        keyvault gpg store personal E2464A53...
 
     Sourced from the keyring rather than a file, so the private key never has
     to be exported to disk first. The revocation certificate goes in too, if
@@ -288,9 +288,9 @@ def secrets_show(name: Annotated[str, typer.Argument()] = "") -> None:
     sys.stdout.write(secrets.render(values))
 
 
-@secrets_app.command("add")
-def secrets_add(name: str, force: bool = False) -> None:
-    """Prompt for a secret and store it as env.<NAME>."""
+@secrets_app.command("store")
+def secrets_store(name: str, force: bool = False) -> None:
+    """Prompt for a secret and store it in the vault as env.<NAME>."""
     secrets.check_name(name)
     vault, fields = _open()
     if f"env.{name}" in fields and not force:
@@ -301,7 +301,7 @@ def secrets_add(name: str, force: bool = False) -> None:
     # Enough to catch a truncated paste, not enough to expose the secret.
     typer.echo(f"{len(value)} characters ending {value[-4:]!r}")
     vault.write_fields(fields | {f"env.{name}": value})
-    typer.echo(f"stored env.{name}; run 'keyvault secrets sync' to export it")
+    typer.echo(f"stored env.{name}; run 'keyvault secrets show' to export it")
 
 
 @secrets_app.command("list")

@@ -10,8 +10,8 @@ uv tool install git+https://github.com/USER/keyvault
 
 keyvault ssh new                 # generate a key here, store it in the vault
 keyvault ssh load laptop         # vault -> ssh-agent, nothing on disk
-keyvault ssh deploy user@host    # pick which public keys that host accepts
-keyvault secrets sync            # render the env file
+keyvault secrets show            # export lines for eval or redirection
+keyvault gpg install             # vault -> local keyring
 keyvault --help                  # everything else
 ```
 
