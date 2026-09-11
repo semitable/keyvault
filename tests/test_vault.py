@@ -78,7 +78,7 @@ def test_session_never_appears_in_argv(
             list=json.dumps([item([{"name": "env.A", "value": "1", "type": 1}])]),
         ),
     )
-    Vault().read()
+    Vault().read_fields()
     assert fake.calls
     for call in fake.calls:
         assert "s3ss10n" not in " ".join(call["argv"])
@@ -86,7 +86,7 @@ def test_session_never_appears_in_argv(
     assert envs and all(e["BW_SESSION"] == "s3ss10n" for e in envs)
 
 
-def test_read_merges_fields_into_a_document(
+def test_read_returns_flat_fields(
     monkeypatch: pytest.MonkeyPatch, unlocked: None
 ) -> None:
     install(
@@ -105,7 +105,7 @@ def test_read_merges_fields_into_a_document(
             ),
         ),
     )
-    assert Vault().read() == {"env": {"A": "1"}, "ssh": {"laptop": {"public": "P"}}}
+    assert Vault().read_fields() == {"env.A": "1", "ssh.laptop.public": "P"}
 
 
 def test_read_tolerates_an_item_with_no_fields(
@@ -118,7 +118,7 @@ def test_read_tolerates_an_item_with_no_fields(
             list=json.dumps([item([]) | {"fields": None}]),
         ),
     )
-    assert Vault().read() == {}
+    assert Vault().read_fields() == {}
 
 
 @pytest.mark.parametrize(
@@ -139,7 +139,7 @@ def test_item_must_resolve_to_exactly_one(
         FakeBw(status=json.dumps({"status": "unlocked"}), list=json.dumps(found)),
     )
     with pytest.raises(VaultError, match=message):
-        Vault().read()
+        Vault().read_fields()
 
 
 def test_sync_failure_does_not_stop_a_read(
@@ -156,7 +156,7 @@ def test_sync_failure_does_not_stop_a_read(
     vault = Vault()
     vault.sync()
     assert "using the local cache" in caplog.text
-    assert vault.read() == {"env": {"A": "1"}}
+    assert vault.read_fields() == {"env.A": "1"}
 
 
 def test_write_refuses_when_the_item_changed(
@@ -172,9 +172,9 @@ def test_write_refuses_when_the_item_changed(
         ),
     )
     vault = Vault()
-    vault.read()
+    vault.read_fields()
     with pytest.raises(VaultError, match="changed in the vault"):
-        vault.write({"env": {"A": "1"}})
+        vault.write_fields({"env.A": "1"})
 
 
 def test_write_sends_the_payload_on_stdin_and_keeps_field_types(
@@ -192,8 +192,8 @@ def test_write_sends_the_payload_on_stdin_and_keeps_field_types(
         ),
     )
     vault = Vault()
-    vault.read()
-    vault.write({"env": {"A": "new", "B": "fresh"}})
+    vault.read_fields()
+    vault.write_fields({"env.A": "new", "env.B": "fresh"})
 
     edit = next(c for c in fake.calls if c["argv"][1] == "edit")
     assert edit["argv"] == ["bw", "edit", "item", ITEM_ID]
@@ -249,4 +249,4 @@ def test_write_requires_a_prior_read(
         ),
     )
     with pytest.raises(AssertionError):
-        Vault().write({"env": {"A": "1"}})
+        Vault().write_fields({"env.A": "1"})

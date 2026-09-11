@@ -17,7 +17,7 @@ import subprocess
 from typing import Any
 
 from .errors import VaultError
-from .paths import Document, flatten, merge
+from .paths import merge
 
 logger = logging.getLogger(__name__)
 
@@ -55,20 +55,22 @@ class Vault:
         except VaultError as exc:
             logger.warning("vault sync failed, using the local cache: %s", exc)
 
-    def read(self) -> Document:
+    def read_fields(self) -> dict[str, str]:
         item = self._fetch()
         self._read_revision = item["revisionDate"]
         fields = item.get("fields") or []
-        return merge({field["name"]: field["value"] for field in fields})
+        return {field["name"]: field["value"] for field in fields}
 
-    def write(self, doc: Document) -> None:
-        """Replace the item's fields with `doc`.
+    def write_fields(self, fields: dict[str, str]) -> None:
+        """Replace the item's fields.
 
-        Refuses if the item changed since `read`, so two machines editing
-        concurrently cannot silently lose one side's work.
+        Refuses if the item changed since `read_fields`, so two machines
+        editing concurrently cannot silently lose one side's work.
         """
-        assert self._read_revision is not None, "read() before write()"
-        fields = flatten(doc)
+        assert self._read_revision is not None, "read_fields() before write_fields()"
+        # Rejects a leaf/branch conflict before it reaches the vault, where it
+        # would make every later read fail.
+        merge(fields)
         item = self._fetch(refresh=True)
         if item["revisionDate"] != self._read_revision:
             raise VaultError(

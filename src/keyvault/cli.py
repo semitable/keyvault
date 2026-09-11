@@ -4,10 +4,14 @@ import json
 import logging
 import shlex
 import sys
+from pathlib import Path
+from typing import Annotated
 
 import typer
 
+from . import ssh
 from .errors import KeyvaultError
+from .paths import merge
 from .vault import Vault, lock_session, open_session
 
 app = typer.Typer(
@@ -15,6 +19,8 @@ app = typer.Typer(
     add_completion=False,
     help="Bitwarden-backed secrets, GPG and SSH key management.",
 )
+ssh_app = typer.Typer(no_args_is_help=True, help="SSH keys.")
+app.add_typer(ssh_app, name="ssh")
 
 
 # Without a callback, typer folds a lone command into the root and `keyvault
@@ -64,10 +70,96 @@ def dump() -> None:
 
     Writes every secret to stdout, so mind the scrollback.
     """
+    _, fields = _open()
+    json.dump(merge(fields), sys.stdout, indent=2, sort_keys=True)
+    sys.stdout.write("\n")
+
+
+@ssh_app.command("new")
+def ssh_new(name: Annotated[str, typer.Argument()] = "") -> None:
+    """Generate a key on this machine and store it in the vault.
+
+    The key is written to ~/.ssh/id_<name>, which is where it lives from then
+    on; the vault gets a copy so another machine can retrieve it.
+    """
+    vault, fields = _open()
+    name = name or ssh.default_name()
+    if f"ssh.{name}" in fields:
+        raise KeyvaultError(f"the vault already holds a key named {name!r}")
+
+    private = ssh.generate(name, ssh.key_path(name))
+    vault.write_fields(fields | {f"ssh.{name}": private})
+    typer.echo(f"{ssh.key_path(name)}\n{ssh.public_key(private)}")
+
+
+@ssh_app.command("import")
+def ssh_import(name: str, path: Path, force: bool = False) -> None:
+    """Store a key that already exists on disk in the vault.
+
+    For adopting a machine's existing key, where the filename does not follow
+    the id_<name> convention:
+
+        keyvault ssh import oxygen ~/.ssh/id_ed25519
+    """
+    vault, fields = _open()
+    if f"ssh.{name}" in fields and not force:
+        raise KeyvaultError(
+            f"the vault already holds a key named {name!r}; pass --force to replace it"
+        )
+    private = ssh.read_key(path)
+    if (twin := ssh.find_duplicate(fields, private, ignore=name)) and not force:
+        raise KeyvaultError(
+            f"that key is already in the vault as {twin!r}; "
+            "pass --force to store it under a second name"
+        )
+    vault.write_fields(fields | {f"ssh.{name}": private})
+    typer.echo(f"stored {name!r}: {ssh.fingerprint(private)}")
+
+
+@ssh_app.command("load")
+def ssh_load(name: str, master: bool = False) -> None:
+    """Load a key from the vault into ssh-agent, without touching disk."""
+    _, fields = _open()
+    ssh.add_to_agent(_private_key(fields, name, master=master))
+    typer.echo(f"loaded {name!r}")
+
+
+@ssh_app.command("install")
+def ssh_install(name: str, force: bool = False, master: bool = False) -> None:
+    """Write a key from the vault to ~/.ssh/id_<name>.
+
+    Prefer `load` unless something needs a file: an unattended job, or a tool
+    that ignores ssh-agent.
+    """
+    _, fields = _open()
+    private = _private_key(fields, name, master=master)
+    typer.echo(str(ssh.write(name, private, force=force)))
+
+
+@ssh_app.command("list")
+def ssh_list() -> None:
+    """Show the keys in the vault."""
+    _, fields = _open()
+    if not (stored := ssh.names(fields)):
+        typer.echo("no keys in the vault")
+        return
+    for name in stored:
+        typer.echo(f"{name:<16} {ssh.fingerprint(fields[f'ssh.{name}'])}")
+
+
+def _open() -> tuple[Vault, dict[str, str]]:
+    """Unlock, sync and read once. bw costs about a second per call."""
     vault = Vault()
     vault.sync()
-    json.dump(vault.read(), sys.stdout, indent=2, sort_keys=True)
-    sys.stdout.write("\n")
+    return vault, vault.read_fields()
+
+
+def _private_key(fields: dict[str, str], name: str, *, master: bool) -> str:
+    if name == ssh.MASTER and not master:
+        raise KeyvaultError(
+            "the master key is for recovery; pass --master to use it anyway"
+        )
+    return ssh.private_key(fields, name)
 
 
 def main() -> None:
