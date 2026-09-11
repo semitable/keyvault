@@ -96,6 +96,20 @@ def section(fields: dict[str, str], name: str) -> dict[str, str]:
     return children
 
 
+def groups(fields: dict[str, str], name: str) -> dict[str, dict[str, str]]:
+    """The grandchildren of a top-level section, grouped by middle segment.
+
+    For a two-level section such as `gpg.<name>.<part>`, returns
+    `{name: {part: value}}`.
+    """
+    grouped: dict[str, dict[str, str]] = {}
+    for path, value in fields.items():
+        match path.split("."):
+            case [head, key, part] if head == name:
+                grouped.setdefault(key, {})[part] = value
+    return grouped
+
+
 def split_path(path: str) -> list[str]:
     """Split a field name into validated segments."""
     if not path:

@@ -187,52 +187,54 @@ def ssh_list() -> None:
 
 
 @gpg_app.command("show")
-def gpg_show() -> None:
+def gpg_show(name: Annotated[str, typer.Argument()] = "") -> None:
     """Print the armored private key.
 
-    The escape hatch, for piping the key somewhere other than the local
-    keyring:
+    For piping the key somewhere other than the local keyring:
 
         keyvault gpg show | gpg --import
 
     Prefer `gpg install` for the local keyring: a pipe cannot set ownertrust,
-    without which gpg warns on every use that the key is unverified.
+    and gpg refuses to encrypt to a key it has none for.
     """
     _, fields = _open()
-    sys.stdout.write(gpg_keys.private_key(fields))
+    sys.stdout.write(gpg_keys.private_key(fields, gpg_keys.resolve(fields, name)))
 
 
 @gpg_app.command("install")
-def gpg_install(force: bool = False) -> None:
-    """Import the GPG key from the vault into the local keyring.
+def gpg_install(name: Annotated[str, typer.Argument()] = "") -> None:
+    """Import a GPG key from the vault into the local keyring.
+
+    Also marks it ultimately trusted, without which gpg refuses to encrypt to
+    it -- so `git-crypt add-gpg-user` would fail even though the key is there.
 
     The key carries no passphrase, so nothing prompts on use afterwards: any
-    process running as you can decrypt what it protects. Remove it again with
+    process running as you can decrypt what it protects. Undo with
     `gpg --delete-secret-keys <fingerprint>`.
     """
     _, fields = _open()
-    fingerprint = gpg_keys.fingerprint(fields)
-    if gpg_keys.in_keyring(fingerprint) and not force:
-        typer.echo(f"{fingerprint} is already in the keyring")
-        return
-    gpg_keys.install(gpg_keys.private_key(fields), fingerprint)
-    typer.echo(f"imported {fingerprint}, trusted ultimately")
+    key = gpg_keys.resolve(fields, name)
+    fingerprint = gpg_keys.install(gpg_keys.private_key(fields, key))
+    typer.echo(f"imported {key!r} as {fingerprint}, trusted ultimately")
 
 
 @gpg_app.command("check")
 def gpg_check() -> None:
-    """Report what the vault holds and whether the key is installed.
+    """Report what the vault holds and whether each key is installed.
 
-    Prints lengths, never values.
+    Reads fingerprints off the stored keys without importing anything, and
+    prints lengths rather than values.
     """
     _, fields = _open()
-    fingerprint = gpg_keys.fingerprint(fields)
-    typer.echo(f"fingerprint  {fingerprint}")
-    typer.echo(
-        f"keyring      {'present' if gpg_keys.in_keyring(fingerprint) else 'absent'}"
-    )
-    for path in sorted(p for p in fields if p.startswith("gpg.")):
-        typer.echo(f"{path:<24} {len(fields[path])} chars")
+    if not (keys := gpg_keys.names(fields)):
+        typer.echo("no gpg keys in the vault")
+        return
+    for key in keys:
+        fingerprint = gpg_keys.fingerprint(gpg_keys.private_key(fields, key))
+        state = "in keyring" if gpg_keys.in_keyring(fingerprint) else "not imported"
+        typer.echo(f"{key:<12} {fingerprint} {state}")
+        for path in sorted(p for p in fields if p.startswith(f"gpg.{key}.")):
+            typer.echo(f"  {path.split('.', 2)[2]:<20} {len(fields[path])} chars")
 
 
 @secrets_app.command("show")

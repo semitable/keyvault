@@ -1,53 +1,68 @@
-"""GPG key import.
+"""GPG keys.
 
-The vault holds `gpg.fingerprint` and `gpg.private`. The public key is not
-stored: importing the private block yields it, because a secret key packet
-carries the public material.
+`gpg.<name>.private` holds the armored private key; `gpg.<name>.revocation-cert`
+holds its revocation certificate, if there is one. Two levels because a GPG key
+has more than one thing worth keeping, unlike an SSH key.
 
-`gpg.revocation-cert` is never read here. Importing it revokes the key, and
-that is irreversible once the revoked key reaches a keyserver, so the only
-protection worth having is that no routine code path can reach it.
+Fingerprints are not stored. They are read off the armored key without
+importing it, so `check` can report what the vault holds without touching the
+local keyring.
+
+`install` reads only `.private`. Importing a revocation certificate revokes the
+key, so nothing here looks that field up.
 """
 
 import subprocess
 
 from .errors import KeyvaultError
+from .paths import groups
 
 PRIVATE_ARMOR = "-----BEGIN PGP PRIVATE KEY BLOCK-----"
 
+# gpg --export-ownertrust scale. 6 is ultimate: "this key is mine, treat its
+# self-signature as authoritative". An imported key arrives with none, and gpg
+# then refuses to encrypt to it -- which is what git-crypt needs to do.
+TRUST_ULTIMATE = 6
 
-def fingerprint(fields: dict[str, str]) -> str:
-    if not (value := fields.get("gpg.fingerprint")):
-        raise KeyvaultError("the vault holds no gpg.fingerprint")
-    return value.replace(" ", "").upper()
+
+def names(fields: dict[str, str]) -> list[str]:
+    return sorted(groups(fields, "gpg"))
 
 
-def private_key(fields: dict[str, str]) -> str:
-    if not (private := fields.get("gpg.private")):
-        raise KeyvaultError("the vault holds no gpg.private")
+def resolve(fields: dict[str, str], name: str) -> str:
+    """The key to act on: the named one, or the only one if there is just one."""
+    if name:
+        return name
+    match names(fields):
+        case [only]:
+            return only
+        case []:
+            raise KeyvaultError("the vault holds no gpg keys")
+        case several:
+            raise KeyvaultError(f"name one of: {', '.join(several)}")
+
+
+def private_key(fields: dict[str, str], name: str) -> str:
+    if not (private := fields.get(f"gpg.{name}.private")):
+        raise KeyvaultError(f"the vault holds no gpg.{name}.private")
     if not private.lstrip().startswith(PRIVATE_ARMOR):
         raise KeyvaultError(
-            "gpg.private is not a PGP PRIVATE KEY BLOCK; refusing to import it"
+            f"gpg.{name}.private is not a PGP PRIVATE KEY BLOCK; refusing to use it"
         )
     return private
 
 
+def fingerprint(private: str) -> str:
+    """Read the fingerprint off an armored key, importing nothing."""
+    listing = _gpg("--show-keys", "--with-colons", stdin=private) or ""
+    for line in listing.splitlines():
+        if line.startswith("fpr:"):
+            return line.split(":")[9]
+    raise KeyvaultError("gpg could not read a fingerprint from the stored key")
+
+
 def in_keyring(fingerprint: str) -> bool:
-    return _gpg("--list-secret-keys", fingerprint, check=False) is not None
-
-
-def install(private: str, fingerprint: str) -> None:
-    """Import the key and mark it ultimately trusted.
-
-    Without ultimate trust, gpg and git-crypt warn on every use that there is
-    no assurance the key belongs to its owner.
-    """
-    _gpg("--batch", "--quiet", "--import", stdin=private)
-    _gpg("--import-ownertrust", stdin=f"{fingerprint}:6:\n")
-    if fingerprint not in installed_fingerprints():
-        raise KeyvaultError(
-            f"imported, but {fingerprint} is not in the keyring; check the vault item"
-        )
+    return fingerprint in installed_fingerprints()
 
 
 def installed_fingerprints() -> set[str]:
@@ -57,13 +72,28 @@ def installed_fingerprints() -> set[str]:
     }
 
 
+def install(private: str) -> str:
+    """Import the key, trust it ultimately, and return its fingerprint.
+
+    Asserts the key gpg actually imported is the one the vault holds, by
+    comparing the keyring before and after -- membership alone would pass on a
+    fingerprint that happened to be present already.
+    """
+    expected = fingerprint(private)
+    before = installed_fingerprints()
+    _gpg("--batch", "--quiet", "--import", stdin=private)
+    added = installed_fingerprints() - before
+    if added and expected not in added:
+        raise KeyvaultError(f"gpg imported {', '.join(sorted(added))}, not {expected}")
+    if expected not in installed_fingerprints():
+        raise KeyvaultError(f"imported, but {expected} is not in the keyring")
+    _gpg("--import-ownertrust", stdin=f"{expected}:{TRUST_ULTIMATE}:\n")
+    return expected
+
+
 def _gpg(*args: str, stdin: str | None = None, check: bool = True) -> str | None:
     proc = subprocess.run(
-        ["gpg", *args],
-        input=stdin,
-        capture_output=True,
-        text=True,
-        check=False,
+        ["gpg", *args], input=stdin, capture_output=True, text=True, check=False
     )
     if proc.returncode != 0:
         if check:
