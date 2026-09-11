@@ -186,6 +186,22 @@ def ssh_list() -> None:
         typer.echo(f"{name:<16} {ssh.fingerprint(fields[f'ssh.{name}'])}")
 
 
+@gpg_app.command("show")
+def gpg_show() -> None:
+    """Print the armored private key.
+
+    The escape hatch, for piping the key somewhere other than the local
+    keyring:
+
+        keyvault gpg show | gpg --import
+
+    Prefer `gpg install` for the local keyring: a pipe cannot set ownertrust,
+    without which gpg warns on every use that the key is unverified.
+    """
+    _, fields = _open()
+    sys.stdout.write(gpg_keys.private_key(fields))
+
+
 @gpg_app.command("install")
 def gpg_install(force: bool = False) -> None:
     """Import the GPG key from the vault into the local keyring.
