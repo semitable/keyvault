@@ -124,3 +124,25 @@ def test_public_key_leaves_no_file_behind(private: str) -> None:
     before = set(pathlib.Path(tempfile.gettempdir()).iterdir())
     ssh.public_key(private)
     assert set(pathlib.Path(tempfile.gettempdir()).iterdir()) == before
+
+
+def test_read_key_repairs_crlf_and_a_missing_final_newline(tmp_path: Path) -> None:
+    # Exactly what a key pasted out of a Bitwarden note looks like. ssh-keygen
+    # rejects both, so read_key has to fix them before storing.
+    good = ssh.generate("src", tmp_path / "id_src")
+    mangled = tmp_path / "pasted"
+    mangled.write_text(good.replace("\n", "\r\n").rstrip("\r\n"))
+    repaired = ssh.read_key(mangled)
+    assert "\r" not in repaired
+    assert repaired.endswith("\n")
+    assert ssh.public_key(repaired) == ssh.public_key(good)
+
+
+def test_read_key_rejects_a_truncated_key(tmp_path: Path) -> None:
+    # Has the armor header, so a header check alone would accept it; only
+    # actually parsing the key catches it.
+    good = ssh.generate("src", tmp_path / "id_src")
+    truncated = tmp_path / "half"
+    truncated.write_text(good[: len(good) // 2] + "\n")
+    with pytest.raises(KeyvaultError):
+        ssh.read_key(truncated)

@@ -16,6 +16,7 @@ directory, removed immediately.
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -99,13 +100,28 @@ def generate(name: str, path: Path) -> str:
     return path.read_text()
 
 
-def read_key(path: Path) -> str:
-    """Read a private key from disk."""
-    if not path.exists():
-        raise KeyvaultError(f"{path} does not exist")
-    private = path.read_text()
+def read_key(source: Path | None) -> str:
+    """Read a private key from a file, or from stdin when `source` is None.
+
+    Normalises line endings and the trailing newline, then proves the result
+    parses by deriving its public half. Both matter for a key pasted out of a
+    note: ssh-keygen rejects CRLF endings and a missing final newline, and
+    without this check a mangled paste would be stored and only fail months
+    later at load time.
+    """
+    if source is None:
+        private = sys.stdin.read()
+    elif not source.exists():
+        raise KeyvaultError(f"{source} does not exist")
+    else:
+        private = source.read_text()
+
+    private = private.replace("\r\n", "\n").replace("\r", "\n")
+    if not private.endswith("\n"):
+        private += "\n"
     if not private.lstrip().startswith("-----BEGIN"):
-        raise KeyvaultError(f"{path} is not a private key")
+        raise KeyvaultError("that is not a private key")
+    public_key(private)
     return private
 
 

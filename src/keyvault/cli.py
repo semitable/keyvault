@@ -133,19 +133,23 @@ def ssh_new(name: Annotated[str, typer.Argument()] = "") -> None:
 
 @ssh_app.command("store")
 def ssh_store(name: str, path: Path, force: bool = False) -> None:
-    """Store a key that already exists on disk in the vault.
+    """Store an existing private key in the vault.
 
-    For adopting a machine's existing key, where the filename does not follow
-    the id_<name> convention:
+    For adopting a machine's existing key, or one rescued from elsewhere. A
+    path of - reads the key from stdin:
 
         keyvault ssh store oxygen ~/.ssh/id_ed25519
+        bw get item "old note" | jq -r .notes | keyvault ssh store work -
+
+    Line endings and the trailing newline are normalised, and the key must
+    parse, so a mangled paste fails here rather than at load time.
     """
     vault, fields = _open()
     if f"ssh.{name}" in fields and not force:
         raise KeyvaultError(
             f"the vault already holds a key named {name!r}; pass --force to replace it"
         )
-    private = ssh.read_key(path)
+    private = ssh.read_key(None if str(path) == "-" else path)
     if (twin := ssh.find_duplicate(fields, private, ignore=name)) and not force:
         raise KeyvaultError(
             f"that key is already in the vault as {twin!r}; "
