@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Annotated
 
+import questionary
 import typer
 
 from . import gpg as gpg_keys
@@ -188,7 +189,7 @@ def ssh_deploy(target: str, apply: bool = False) -> None:
 
     Reads the host's real authorized_keys rather than any local manifest, so
     there is nothing to drift. Keys it does not recognise are listed and kept
-    unless you say otherwise -- one may belong to a colleague or a CI job.
+    unless you untick them -- one may belong to a colleague or a CI job.
 
     Without --apply nothing is written. With it: the previous file is kept as
     authorized_keys.prev, and a brand-new connection must authenticate before
@@ -208,20 +209,28 @@ def ssh_deploy(target: str, apply: bool = False) -> None:
     with remote.connect(target) as session:
         present = ssh.classify(session.read_authorized_keys(), materials)
         authorised = {name for name, _ in present if name}
-        unknown = [line for name, line in present if name is None]
 
-        keep: list[str] = []
-        for name in names:
-            prompt = f"  {name:<14} ...{materials[name][-12:]}"
-            if typer.confirm(prompt, default=name in authorised):
-                keep.append(ssh.authorized_line(name, fields[f"ssh.{name}"]))
-        for line in unknown:
-            label = ssh.key_material(line) or line
-            if typer.confirm(
-                f"  {'unknown':<14} ...{label[-12:]}  keep?", default=True
-            ):
-                keep.append(line)
+        # Each option carries the exact line to write, so the answer needs no
+        # mapping back and the order of the file follows the order shown.
+        options = [
+            (
+                ssh.authorized_line(name, fields[f"ssh.{name}"]),
+                f"{name:<14} ...{materials[name][-12:]}",
+                name in authorised,
+            )
+            for name in names
+        ]
+        options += [
+            (
+                line,
+                f"{'(unknown)':<14} ...{(ssh.key_material(line) or line)[-12:]}",
+                True,
+            )
+            for name, line in present
+            if name is None
+        ]
 
+        keep = _choose(f"keys authorised on {target}", options)
         if not keep:
             raise KeyvaultError("that would authorise no keys at all; refusing")
 
@@ -433,6 +442,33 @@ def _changes(
             path for path in before.keys() & after.keys() if before[path] != after[path]
         ),
     )
+
+
+def _choose(title: str, options: list[tuple[str, str, bool]]) -> list[str]:
+    """Pick from (value, label, checked) options, preserving their order.
+
+    A checkbox list when stdin is a terminal; otherwise a y/N sequence, so
+    pipes and tests still work where prompt_toolkit cannot draw.
+    """
+    if sys.stdin.isatty():
+        answer = questionary.checkbox(
+            title,
+            choices=[
+                questionary.Choice(label, value=value, checked=checked)
+                for value, label, checked in options
+            ],
+        ).ask()
+        if answer is None:
+            raise KeyvaultError("cancelled")
+        chosen = set(answer)
+        return [value for value, _, _ in options if value in chosen]
+
+    typer.echo(title)
+    return [
+        value
+        for value, label, checked in options
+        if typer.confirm(f"  {label}", default=checked)
+    ]
 
 
 def _open() -> tuple[Vault, dict[str, str]]:

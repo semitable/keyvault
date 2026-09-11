@@ -1,14 +1,17 @@
 import json
 import subprocess
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import pytest
+import questionary
 from typer.testing import CliRunner
 
 from keyvault import remote, ssh
-from keyvault.cli import app
+from keyvault.cli import _choose, app
+from keyvault.errors import KeyvaultError
 
 runner = CliRunner()
 TARGET = "user@host"
@@ -176,3 +179,48 @@ def test_can_authenticate_bypasses_any_control_master(
     monkeypatch.setattr(subprocess, "run", run)
     remote.can_authenticate(TARGET)
     assert "ControlPath=none" in seen[0]
+
+
+OPTIONS = [("line-a", "alpha", True), ("line-b", "bravo", False), ("line-c", "c", True)]
+
+
+def test_choose_uses_a_checkbox_on_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeQuestion:
+        def ask(self) -> list[str]:
+            return ["line-c", "line-a"]
+
+    def checkbox(title: str, choices: list[Any]) -> FakeQuestion:
+        captured["checked"] = [c.checked for c in choices]
+        return FakeQuestion()
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(questionary, "checkbox", checkbox)
+    monkeypatch.setattr(questionary, "Choice", _Choice)
+
+    chosen = _choose("pick", OPTIONS)
+    # Pre-ticked from the host's current state, and the file keeps the order
+    # shown rather than the order the answer came back in.
+    assert captured["checked"] == [True, False, True]
+    assert chosen == ["line-a", "line-c"]
+
+
+def test_choose_treats_cancellation_as_an_abort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Cancelled:
+        def ask(self) -> None:
+            return None
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(questionary, "checkbox", lambda *a, **k: Cancelled())
+    monkeypatch.setattr(questionary, "Choice", _Choice)
+
+    with pytest.raises(KeyvaultError, match="cancelled"):
+        _choose("pick", OPTIONS)
+
+
+class _Choice:
+    def __init__(self, label: str, value: str, checked: bool) -> None:
+        self.label, self.value, self.checked = label, value, checked
