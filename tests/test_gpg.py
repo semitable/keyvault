@@ -88,3 +88,33 @@ def test_fingerprint_is_read_off_a_real_key_without_importing(
         check=True,
     ).stdout
     assert gpg.fingerprint(armored) == expected
+
+
+def test_find_duplicate_matches_by_fingerprint(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gpg, "fingerprint", lambda private: f"FPR-OF-{private}")
+    fields = {"gpg.personal.private": ARMOR, "gpg.work.private": "OTHER"}
+    assert gpg.find_duplicate(fields, f"FPR-OF-{ARMOR}", ignore="") == "personal"
+    assert gpg.find_duplicate(fields, f"FPR-OF-{ARMOR}", ignore="personal") is None
+    assert gpg.find_duplicate(fields, "FPR-OF-nothing", ignore="") is None
+
+
+def test_export_secret_refuses_a_key_not_in_the_keyring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gpg, "installed_fingerprints", lambda: {"AAAA"})
+    with pytest.raises(KeyvaultError, match="not a secret key in this keyring"):
+        gpg.export_secret("BBBB")
+
+
+def test_revocation_certificate_is_read_when_gpg_kept_one(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pathlib
+
+    home = pathlib.Path(str(tmp_path))
+    monkeypatch.setenv("GNUPGHOME", str(home))
+    assert gpg.revocation_certificate("ABCD") is None
+    revocs = home / "openpgp-revocs.d"
+    revocs.mkdir()
+    (revocs / "ABCD.rev").write_text(REVOCATION)
+    assert gpg.revocation_certificate("ABCD") == REVOCATION

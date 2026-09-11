@@ -12,7 +12,9 @@ local keyring.
 key, so nothing here looks that field up.
 """
 
+import os
 import subprocess
+from pathlib import Path
 
 from .errors import KeyvaultError
 from .paths import groups
@@ -89,6 +91,36 @@ def install(private: str) -> str:
         raise KeyvaultError(f"imported, but {expected} is not in the keyring")
     _gpg("--import-ownertrust", stdin=f"{expected}:{TRUST_ULTIMATE}:\n")
     return expected
+
+
+def export_secret(fingerprint: str) -> str:
+    """Export an armored private key from the local keyring.
+
+    Prompts for the passphrase if the key has one. Storing a key in the vault
+    is an interactive operation, so a prompt here is fine.
+    """
+    if fingerprint not in installed_fingerprints():
+        raise KeyvaultError(f"{fingerprint} is not a secret key in this keyring")
+    armored = _gpg("--armor", "--export-secret-keys", fingerprint) or ""
+    if not armored.lstrip().startswith(PRIVATE_ARMOR):
+        raise KeyvaultError(f"gpg did not export a private key for {fingerprint}")
+    return armored
+
+
+def revocation_certificate(fingerprint: str) -> str | None:
+    """The revocation certificate gpg wrote when the key was generated."""
+    home = os.environ.get("GNUPGHOME") or str(Path.home() / ".gnupg")
+    path = Path(home) / "openpgp-revocs.d" / f"{fingerprint}.rev"
+    return path.read_text() if path.exists() else None
+
+
+def find_duplicate(fields: dict[str, str], wanted: str, *, ignore: str) -> str | None:
+    """The name a key with this fingerprint is already stored under."""
+    for name in names(fields):
+        stored = fields.get(f"gpg.{name}.private")
+        if name != ignore and stored and fingerprint(stored) == wanted:
+            return name
+    return None
 
 
 def _gpg(*args: str, stdin: str | None = None, check: bool = True) -> str | None:

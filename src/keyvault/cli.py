@@ -201,6 +201,35 @@ def gpg_show(name: Annotated[str, typer.Argument()] = "") -> None:
     sys.stdout.write(gpg_keys.private_key(fields, gpg_keys.resolve(fields, name)))
 
 
+@gpg_app.command("import")
+def gpg_import(name: str, fingerprint: str, force: bool = False) -> None:
+    """Store a key from the local keyring in the vault.
+
+        keyvault gpg import personal E2464A53...
+
+    Sourced from the keyring rather than a file, so the private key never has
+    to be exported to disk first. The revocation certificate goes in too, if
+    gpg kept one for this key.
+    """
+    vault, fields = _open()
+    if f"gpg.{name}.private" in fields and not force:
+        raise KeyvaultError(
+            f"the vault already holds gpg.{name}; pass --force to replace it"
+        )
+    wanted = fingerprint.replace(" ", "").upper()
+    if (twin := gpg_keys.find_duplicate(fields, wanted, ignore=name)) and not force:
+        raise KeyvaultError(
+            f"that key is already in the vault as {twin!r}; "
+            "pass --force to store it under a second name"
+        )
+    entry = {f"gpg.{name}.private": gpg_keys.export_secret(wanted)}
+    if revocation := gpg_keys.revocation_certificate(wanted):
+        entry[f"gpg.{name}.revocation-cert"] = revocation
+    vault.write_fields(fields | entry)
+    parts = ", ".join(sorted(path.split(".", 2)[2] for path in entry))
+    typer.echo(f"stored {name!r} as {wanted} [{parts}]")
+
+
 @gpg_app.command("install")
 def gpg_install(name: Annotated[str, typer.Argument()] = "") -> None:
     """Import a GPG key from the vault into the local keyring.
